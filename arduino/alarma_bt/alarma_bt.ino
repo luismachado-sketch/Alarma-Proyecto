@@ -191,10 +191,11 @@ void apagarLuz() {
 
 // === ENVIAR ESTADO COMPLETO ===
 void enviarEstado() {
-  bluetooth.println(F("STATUS:armed:") + String(sistemaArmado ? "1" : "0"));
-  bluetooth.println(F("STATUS:siren:") + String(sirenaEncendida ? "1" : "0"));
-  bluetooth.println(F("STATUS:light:") + String(luzEncendida ? "1" : "0"));
-  bluetooth.println(F("SENSOR:motion:") + String(movimientoDetectado ? "1" : "0"));
+  String msg;
+  msg = "STATUS:armed:"; msg += sistemaArmado ? "1" : "0"; bluetooth.println(msg);
+  msg = "STATUS:siren:"; msg += sirenaEncendida ? "1" : "0"; bluetooth.println(msg);
+  msg = "STATUS:light:"; msg += luzEncendida ? "1" : "0"; bluetooth.println(msg);
+  msg = "SENSOR:motion:"; msg += movimientoDetectado ? "1" : "0"; bluetooth.println(msg);
 }
 
 // === ENVIAR ESTADO DE SENSORES ===
@@ -203,17 +204,18 @@ void enviarEstadoSensores() {
   static bool ultimoEstadoArmed = false;
   static bool ultimoEstadoSiren = false;
   static bool ultimoEstadoLight = false;
+  String msg;
   
   if (sistemaArmado != ultimoEstadoArmed) {
     ultimoEstadoArmed = sistemaArmado;
-    bluetooth.println(F("STATUS:armed:") + String(sistemaArmado ? "1" : "0"));
+    msg = "STATUS:armed:"; msg += sistemaArmado ? "1" : "0"; bluetooth.println(msg);
   }
   if (sirenaEncendida != ultimoEstadoSiren) {
     ultimoEstadoSiren = sirenaEncendida;
-    bluetooth.println(F("STATUS:siren:") + String(sirenaEncendida ? "1" : "0"));
+    msg = "STATUS:siren:"; msg += sirenaEncendida ? "1" : "0"; bluetooth.println(msg);
   }
   if (luzEncendida != ultimoEstadoLight) {
     ultimoEstadoLight = luzEncendida;
-    bluetooth.println(F("STATUS:light:") + String(luzEncendida ? "1" : "0"));
+    msg = "STATUS:light:"; msg += luzEncendida ? "1" : "0"; bluetooth.println(msg);
   }
 }
