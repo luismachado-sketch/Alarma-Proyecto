@@ -1,0 +1,1891 @@
+=== CODIGO APLICACION Alarma-Proyecto (rama main, 2026-09-26) ===
+
+########## app/build.gradle.kts ##########
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
+}
+
+android {
+    namespace = "com.example.alarmaproyecto"
+    compileSdk {
+        version = release(37)
+    }
+
+    defaultConfig {
+        applicationId = "com.example.alarmaproyecto"
+        minSdk = 24
+        targetSdk = 37
+        versionCode = 1
+        versionName = "1.0"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    buildTypes {
+        release {
+            optimization {
+                enable = false
+            }
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+    buildFeatures {
+        compose = true
+    }
+}
+
+dependencies {
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    testImplementation(libs.junit)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(libs.androidx.junit)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+}
+
+########## app/src/main/AndroidManifest.xml ##########
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AlarmaProyecto">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.AlarmaProyecto"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
+
+########## app/src/main/java/com/example/alarmaproyecto/MainActivity.kt ##########
+package com.example.alarmaproyecto
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.compose.rememberNavController
+import com.example.alarmaproyecto.navigation.AppNavigation
+import com.example.alarmaproyecto.notifications.NotificationHelper
+import com.example.alarmaproyecto.ui.theme.AlarmaProyectoTheme
+import com.example.alarmaproyecto.ui.viewmodel.AlarmViewModel
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+        NotificationHelper.createChannel(this)
+        setContent {
+            AlarmaProyectoTheme {
+                val navController = rememberNavController()
+                val alarmViewModel: AlarmViewModel = viewModel()
+                AppNavigation(
+                    navController = navController,
+                    alarmViewModel = alarmViewModel
+                )
+            }
+        }
+    }
+}
+
+
+########## app/src/main/java/com/example/alarmaproyecto/bluetooth/BluetoothConnection.kt ##########
+package com.example.alarmaproyecto.bluetooth
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothSocket
+import android.content.Context
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.util.UUID
+
+enum class ConnectionState {
+    DISCONNECTED, CONNECTING, CONNECTED
+}
+
+data class PairedDeviceInfo(
+    val name: String,
+    val address: String
+)
+
+/**
+ * Conexion Bluetooth clasica (SPP) con el modulo HC-05.
+ * Singleton: estado y lineas recibidas como Flows.
+ */
+object BluetoothConnection {
+
+    private const val SPP_UUID = "00001101-0000-1000-8000-00805F9B34FB"
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var socket: BluetoothSocket? = null
+
+    private val _state = MutableStateFlow(ConnectionState.DISCONNECTED)
+    val state: StateFlow<ConnectionState> = _state
+
+    private val _incoming = MutableSharedFlow<String>(extraBufferCapacity = 64)
+    val incoming: SharedFlow<String> = _incoming
+
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error
+
+    fun clearError() {
+        _error.value = null
+    }
+
+    private fun adapter(context: Context): BluetoothAdapter? =
+        context.getSystemService(BluetoothManager::class.java)?.adapter
+
+    private fun hasConnectPermission(context: Context): Boolean =
+        android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) == PackageManager.PERMISSION_GRANTED
+
+    /** Lista los dispositivos ya emparejados (para diagnostico y conexion manual). */
+    @SuppressLint("MissingPermission")
+    fun bondedDevices(context: Context): List<PairedDeviceInfo> {
+        val appContext = context.applicationContext
+        if (!hasConnectPermission(appContext)) return emptyList()
+
+        val btAdapter = adapter(appContext) ?: return emptyList()
+        return try {
+            (btAdapter.bondedDevices ?: emptySet())
+                .map { PairedDeviceInfo(it.name ?: "Sin nombre", it.address) }
+                .sortedBy { it.name.lowercase() }
+        } catch (e: SecurityException) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Conecta con el HC-05 emparejado.
+     * @param address MAC especifica; null = busca automaticamente "HC-05".
+     * Reintenta 2 veces porque el HC-05 a veces rechaza la primera conexion.
+     */
+    @SuppressLint("MissingPermission")
+    fun connect(context: Context, address: String? = null) {
+        if (_state.value == ConnectionState.CONNECTING || _state.value == ConnectionState.CONNECTED) {
+            return
+        }
+
+        val appContext = context.applicationContext
+
+        if (!hasConnectPermission(appContext)) {
+            _error.value = "Permiso Bluetooth no concedido. Activa el permiso en Ajustes."
+            return
+        }
+
+        val btAdapter = adapter(appContext)
+        if (btAdapter == null) {
+            _error.value = "Bluetooth no disponible en este dispositivo"
+            return
+        }
+        if (!btAdapter.isEnabled) {
+            _error.value = "Bluetooth apagado. Activa el Bluetooth en Ajustes."
+            return
+        }
+
+        _state.value = ConnectionState.CONNECTING
+        _error.value = null
+
+        scope.launch {
+            // Un descubrimiento activo (de otra app) impide conectar
+            try {
+                btAdapter.cancelDiscovery()
+            } catch (_: Exception) {
+            }
+
+            // Resolver el dispositivo (una sola vez)
+            val device: BluetoothDevice = if (address != null) {
+                btAdapter.getRemoteDevice(address)
+            } else {
+                val bonded: Set<BluetoothDevice> = try {
+                    btAdapter.bondedDevices ?: emptySet()
+                } catch (e: SecurityException) {
+                    emptySet()
+                }
+
+                val hc05 = bonded.firstOrNull { d ->
+                    val name = d.name ?: ""
+                    name.startsWith("HC-05", ignoreCase = true) ||
+                        name.startsWith("HC05", ignoreCase = true)
+                }
+
+                if (hc05 == null) {
+                    val nombres = bonded.joinToString { it.name ?: "sin nombre" }
+                    _state.value = ConnectionState.DISCONNECTED
+                    _error.value = if (bonded.isEmpty()) {
+                        "HC-05 no emparejado. Ve a Ajustes > Bluetooth y emparejalo con PIN 1234."
+                    } else {
+                        "HC-05 no encontrado. Dispositivos emparejados: $nombres"
+                    }
+                    return@launch
+                }
+                hc05
+            }
+
+            if (device.bondState != BluetoothDevice.BOND_BONDED) {
+                _state.value = ConnectionState.DISCONNECTED
+                _error.value = "El dispositivo ${device.name ?: device.address} no esta " +
+                    "vinculado. Emparejalo desde Ajustes > Bluetooth con PIN 1234."
+                return@launch
+            }
+
+            val fallos = mutableListOf<String>()
+
+            // 6 intentos: seguro, insecure, y por ultimo canal fijo via reflexion
+            // (el tip clasico para HC-05: createRfcommSocket(1) evita el SDP con puerto -1)
+            for (intento in 1..6) {
+                val metodo = when (intento) {
+                    1, 2 -> "seguro"
+                    3, 4 -> "insecure"
+                    5 -> "canal1"
+                    else -> "canal1-insecure"
+                }
+                try {
+                    closeSocket()
+
+                    val s = crearSocket(device, intento)
+                    try {
+                        s.connect()
+                    } catch (e: Exception) {
+                        try {
+                            s.close()
+                        } catch (_: Exception) {
+                        }
+                        throw e
+                    }
+
+                    socket = s
+                    _state.value = ConnectionState.CONNECTED
+                    readLoop(s)
+                    // readLoop retorno: la conexion se cerro desde el otro lado
+                    return@launch
+                } catch (e: Exception) {
+                    fallos.add("$metodo: ${e.message ?: e.javaClass.simpleName}")
+                    closeSocket()
+                    if (intento < 6) {
+                        kotlinx.coroutines.delay(
+                            when (intento) {
+                                1 -> 1000L
+                                2 -> 2000L
+                                3 -> 3000L
+                                else -> 4000L
+                            }
+                        )
+                    }
+                }
+            }
+
+            _state.value = ConnectionState.DISCONNECTED
+            _error.value = "No se pudo conectar tras 6 intentos. " +
+                "Detalle: ${fallos.joinToString(" | ")}. " +
+                "Prueba: apaga y enciende el Bluetooth del telefono (limpia el stack), " +
+                "cierra las demas apps Bluetooth y reintenta. " +
+                "Si persiste: borra el emparejado, reinicia el HC-05 y vuelve a emparejar con PIN 1234."
+        }
+    }
+
+    /**
+     * Crea el socket segun el intento:
+     * 1-2 seguro (SPP), 3-4 insecure, 5-6 canal fijo 1 por reflexion (sin SDP).
+     */
+    @SuppressLint("MissingPermission")
+    private fun crearSocket(device: BluetoothDevice, intento: Int): BluetoothSocket {
+        val uuid = UUID.fromString(SPP_UUID)
+        return when (intento) {
+            1, 2 -> device.createRfcommSocketToServiceRecord(uuid)
+            3, 4 -> device.createInsecureRfcommSocketToServiceRecord(uuid)
+            5 -> socketPorReflexion(device, "createRfcommSocket", 1)
+            else -> socketPorReflexion(device, "createInsecureRfcommSocket", 1)
+        }
+    }
+
+    /** Accede al metodo oculto createRfcommSocket(canal) - evita la busqueda SDP. */
+    private fun socketPorReflexion(
+        device: BluetoothDevice,
+        nombreMetodo: String,
+        canal: Int
+    ): BluetoothSocket {
+        val metodo = device.javaClass.getMethod(
+            nombreMetodo,
+            Int::class.javaPrimitiveType
+        )
+        return metodo.invoke(device, canal) as BluetoothSocket
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun readLoop(s: BluetoothSocket) {
+        try {
+            val reader = BufferedReader(InputStreamReader(s.inputStream, "UTF-8"))
+            while (true) {
+                val line = reader.readLine() ?: break
+                val limpia = line.trim()
+                if (limpia.isNotEmpty()) {
+                    _incoming.emit(limpia)
+                }
+            }
+        } catch (_: Exception) {
+            // Conexion cerrada o perdida
+        }
+        closeSocket()
+        _state.value = ConnectionState.DISCONNECTED
+    }
+
+    /** Envia un comando con salto de linea (el Arduino usa readStringUntil('\n')). */
+    fun send(command: String) {
+        val s = socket ?: return
+        scope.launch {
+            try {
+                s.outputStream.write(("$command\n").toByteArray(Charsets.UTF_8))
+                s.outputStream.flush()
+            } catch (e: Exception) {
+                _error.value = "Error al enviar comando: ${e.message}"
+                closeSocket()
+                _state.value = ConnectionState.DISCONNECTED
+            }
+        }
+    }
+
+    fun disconnect() {
+        scope.launch {
+            closeSocket()
+            _state.value = ConnectionState.DISCONNECTED
+        }
+    }
+
+    private fun closeSocket() {
+        // Cerrar streams primero evita que el stack quede "sucio" y falle la reconexion
+        try {
+            socket?.inputStream?.close()
+        } catch (_: Exception) {
+        }
+        try {
+            socket?.outputStream?.close()
+        } catch (_: Exception) {
+        }
+        try {
+            socket?.close()
+        } catch (_: Exception) {
+        }
+        socket = null
+    }
+}
+
+
+########## app/src/main/java/com/example/alarmaproyecto/data/UserDatabaseHelper.kt ##########
+package com.example.alarmaproyecto.data
+
+import android.content.ContentValues
+import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
+import java.security.MessageDigest
+
+class UserDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_NAME, null, DATABASE_VERSION) {
+
+    companion object {
+        private const val DATABASE_NAME = "alarma_users.db"
+        private const val DATABASE_VERSION = 1
+        private const val TABLE_USERS = "users"
+        private const val COL_ID = "id"
+        private const val COL_EMAIL = "email"
+        private const val COL_PASSWORD = "password"
+    }
+
+    override fun onCreate(db: SQLiteDatabase?) {
+        val createTable = """
+            CREATE TABLE $TABLE_USERS (
+                $COL_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                $COL_EMAIL TEXT UNIQUE NOT NULL,
+                $COL_PASSWORD TEXT NOT NULL
+            )
+        """.trimIndent()
+        db?.execSQL(createTable)
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase?, oldVersion: Int, newVersion: Int) {
+        db?.execSQL("DROP TABLE IF EXISTS $TABLE_USERS")
+        onCreate(db)
+    }
+
+    fun addUser(email: String, password: String): Boolean {
+        val db = writableDatabase
+        val values = ContentValues().apply {
+            put(COL_EMAIL, email.trim().lowercase())
+            put(COL_PASSWORD, hashPassword(password))
+        }
+        return try {
+            db.insert(TABLE_USERS, null, values) != -1L
+        } catch (e: Exception) {
+            false
+        } finally {
+            db.close()
+        }
+    }
+
+    fun checkUser(email: String, password: String): Boolean {
+        val db = readableDatabase
+        val selection = "$COL_EMAIL = ? AND $COL_PASSWORD = ?"
+        val selectionArgs = arrayOf(email.trim().lowercase(), hashPassword(password))
+        val cursor = db.query(TABLE_USERS, null, selection, selectionArgs, null, null, null)
+        val exists = cursor.count > 0
+        cursor.close()
+        db.close()
+        return exists
+    }
+
+    fun userExists(email: String): Boolean {
+        val db = readableDatabase
+        val selection = "$COL_EMAIL = ?"
+        val selectionArgs = arrayOf(email.trim().lowercase())
+        val cursor = db.query(TABLE_USERS, null, selection, selectionArgs, null, null, null)
+        val exists = cursor.count > 0
+        cursor.close()
+        db.close()
+        return exists
+    }
+
+    private fun hashPassword(password: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(password.toByteArray())
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+}
+
+
+########## app/src/main/java/com/example/alarmaproyecto/data/UserRepository.kt ##########
+package com.example.alarmaproyecto.data
+
+import android.content.Context
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+class UserRepository(context: Context) {
+    private val dbHelper = UserDatabaseHelper(context)
+
+    suspend fun register(email: String, password: String): Boolean = withContext(Dispatchers.IO) {
+        if (dbHelper.userExists(email)) {
+            false
+        } else {
+            dbHelper.addUser(email, password)
+        }
+    }
+
+    suspend fun login(email: String, password: String): Boolean = withContext(Dispatchers.IO) {
+        dbHelper.checkUser(email, password)
+    }
+
+    suspend fun userExists(email: String): Boolean = withContext(Dispatchers.IO) {
+        dbHelper.userExists(email)
+    }
+}
+
+
+########## app/src/main/java/com/example/alarmaproyecto/navigation/AppNavigation.kt ##########
+package com.example.alarmaproyecto.navigation
+
+import androidx.compose.runtime.Composable
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import com.example.alarmaproyecto.ui.screens.LoginScreen
+import com.example.alarmaproyecto.ui.screens.MainScreen
+import com.example.alarmaproyecto.ui.screens.RegisterScreen
+import com.example.alarmaproyecto.ui.viewmodel.AlarmViewModel
+
+object Routes {
+    const val LOGIN = "login"
+    const val REGISTER = "register"
+    const val DASHBOARD = "dashboard"
+}
+
+@Composable
+fun AppNavigation(
+    navController: NavHostController,
+    alarmViewModel: AlarmViewModel
+) {
+    NavHost(
+        navController = navController,
+        startDestination = Routes.LOGIN
+    ) {
+        composable(Routes.LOGIN) {
+            LoginScreen(
+                onLoginSuccess = { email ->
+                    navController.navigate("${Routes.DASHBOARD}/$email") {
+                        popUpTo(Routes.LOGIN) { inclusive = true }
+                    }
+                },
+                onNavigateToRegister = {
+                    navController.navigate(Routes.REGISTER)
+                }
+            )
+        }
+
+        composable(Routes.REGISTER) {
+            RegisterScreen(
+                onRegisterSuccess = {
+                    navController.navigate(Routes.LOGIN) {
+                        popUpTo(Routes.REGISTER) { inclusive = true }
+                    }
+                },
+                onBackToLogin = {
+                    navController.popBackStack()
+                }
+            )
+        }
+
+        composable("${Routes.DASHBOARD}/{email}") { backStackEntry ->
+            val email = backStackEntry.arguments?.getString("email") ?: ""
+            MainScreen(
+                userEmail = email,
+                onLogout = {
+                    alarmViewModel.disconnect()
+                    navController.navigate(Routes.LOGIN) {
+                        popUpTo(Routes.LOGIN) { inclusive = true }
+                    }
+                },
+                viewModel = alarmViewModel
+            )
+        }
+    }
+}
+
+
+########## app/src/main/java/com/example/alarmaproyecto/notifications/NotificationHelper.kt ##########
+package com.example.alarmaproyecto.notifications
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import com.example.alarmaproyecto.R
+
+object NotificationHelper {
+
+    private const val CHANNEL_ID = "alertas"
+    private const val NOTIFICATION_ID = 1001
+
+    fun createChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Alertas de alarma",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Notificaciones de movimiento detectado"
+            }
+            val manager = context.getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun showMotionAlert(context: Context) {
+        createChannel(context)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("Alarma: movimiento detectado")
+            .setContentText("El sensor PIR detecto actividad con el sistema armado.")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("El sensor PIR detecto actividad con el sistema armado. Revisa la camara o el area protegida."))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setAutoCancel(true)
+            .build()
+
+        NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification)
+    }
+}
+
+
+########## app/src/main/java/com/example/alarmaproyecto/ui/screens/ControlScreen.kt ##########
+package com.example.alarmaproyecto.ui.screens
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lightbulb
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.alarmaproyecto.bluetooth.ConnectionState
+import com.example.alarmaproyecto.ui.viewmodel.AlarmViewModel
+
+@Composable
+fun ControlScreen(
+    viewModel: AlarmViewModel,
+    modifier: Modifier = Modifier
+) {
+    val connection by viewModel.connectionState.collectAsState()
+    val armed by viewModel.armed.collectAsState()
+    val siren by viewModel.siren.collectAsState()
+    val light by viewModel.light.collectAsState()
+
+    val conectado = connection == ConnectionState.CONNECTED
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        if (!conectado) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF3E0))
+            ) {
+                Text(
+                    text = "Sin conexion Bluetooth. Ve a la pestana Dashboard y conecta al HC-05 para controlar la alarma.",
+                    modifier = Modifier.padding(16.dp),
+                    fontSize = 14.sp,
+                    color = Color(0xFFE65100)
+                )
+            }
+        }
+
+        // === BOTON ARMAR / DESARMAR ===
+        Button(
+            onClick = { viewModel.setArmed(!armed) },
+            enabled = conectado,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(72.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (armed) Color(0xFFC62828) else Color(0xFF2E7D32)
+            )
+        ) {
+            Text(
+                text = if (armed) "DESACTIVAR ALARMA" else "ACTIVAR ALARMA",
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+        }
+
+        Text(
+            text = if (armed) "Sistema armado: el PIR activara sirena y luz" else "Sistema desarmado: el PIR no dispara alarmas",
+            fontSize = 13.sp,
+            color = Color.Gray
+        )
+
+        // === SWITCH SIRENA ===
+        ControlSwitchCard(
+            icon = { Icon(Icons.Default.Notifications, contentDescription = null, tint = Color(0xFFC62828)) },
+            titulo = "Sirena",
+            subtitulo = "Relay 1 - salida D7",
+            checked = siren,
+            enabled = conectado,
+            onCheckedChange = { viewModel.setSiren(it) }
+        )
+
+        // === SWITCH LUZ ===
+        ControlSwitchCard(
+            icon = { Icon(Icons.Default.Lightbulb, contentDescription = null, tint = Color(0xFFF9A825)) },
+            titulo = "Luz",
+            subtitulo = "Relay 2 - salida D8",
+            checked = light,
+            enabled = conectado,
+            onCheckedChange = { viewModel.setLight(it) }
+        )
+    }
+}
+
+@Composable
+private fun ControlSwitchCard(
+    icon: @Composable () -> Unit,
+    titulo: String,
+    subtitulo: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            icon()
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = titulo,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = subtitulo,
+                    fontSize = 12.sp,
+                    color = Color.Gray
+                )
+            }
+            Switch(
+                checked = checked,
+                enabled = enabled,
+                onCheckedChange = onCheckedChange
+            )
+        }
+    }
+}
+
+
+########## app/src/main/java/com/example/alarmaproyecto/ui/screens/DashboardScreen.kt ##########
+package com.example.alarmaproyecto.ui.screens
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.alarmaproyecto.bluetooth.ConnectionState
+import com.example.alarmaproyecto.ui.theme.IoTPrimary
+import com.example.alarmaproyecto.ui.viewmodel.AlarmViewModel
+
+private val ColorVerde = Color(0xFF2E7D32)
+private val ColorRojo = Color(0xFFC62828)
+private val ColorAmbar = Color(0xFFF9A825)
+private val ColorGris = Color(0xFF757575)
+
+@Composable
+fun DashboardContent(
+    userEmail: String,
+    viewModel: AlarmViewModel,
+    modifier: Modifier = Modifier
+) {
+    val connection by viewModel.connectionState.collectAsState()
+    val armed by viewModel.armed.collectAsState()
+    val siren by viewModel.siren.collectAsState()
+    val light by viewModel.light.collectAsState()
+    val motion by viewModel.motion.collectAsState()
+    val motionTime by viewModel.motionTime.collectAsState()
+    val pairedDevices by viewModel.pairedDevices.collectAsState()
+
+    var showDevices by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // === FILA DE CONEXION BLUETOOTH ===
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            EstadoChip(
+                texto = when (connection) {
+                    ConnectionState.CONNECTED -> "Conectado"
+                    ConnectionState.CONNECTING -> "Conectando..."
+                    ConnectionState.DISCONNECTED -> "Desconectado"
+                },
+                color = when (connection) {
+                    ConnectionState.CONNECTED -> ColorVerde
+                    ConnectionState.CONNECTING -> ColorAmbar
+                    ConnectionState.DISCONNECTED -> ColorRojo
+                }
+            )
+            Button(
+                onClick = {
+                    if (connection == ConnectionState.CONNECTED) {
+                        viewModel.disconnect()
+                    } else {
+                        viewModel.connect()
+                    }
+                },
+                enabled = connection != ConnectionState.CONNECTING,
+                colors = ButtonDefaults.buttonColors(containerColor = IoTPrimary)
+            ) {
+                Text(if (connection == ConnectionState.CONNECTED) "Desconectar" else "Conectar")
+            }
+        }
+
+        // === BOTON VER DISPOSITIVOS ===
+        OutlinedButton(
+            onClick = {
+                viewModel.refreshPairedDevices()
+                showDevices = true
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Ver dispositivos Bluetooth emparejados")
+        }
+
+        Text(
+            text = "Sesion: $userEmail",
+            fontSize = 13.sp,
+            color = ColorGris
+        )
+
+        // === TARJETA SISTEMA ===
+        StatusCard(
+            titulo = "Sistema",
+            valor = if (armed) "ARMADO" else "DESARMADO",
+            colorValor = if (armed) ColorRojo else ColorVerde,
+            detalle = if (armed) "El PIR activara sirena y luz al detectar movimiento" else "El PIR ignora el movimiento"
+        )
+
+        // === TARJETA MOVIMIENTO ===
+        StatusCard(
+            titulo = "Movimiento",
+            valor = if (motion) "SI DETECTADO" else "NO",
+            colorValor = if (motion) ColorRojo else ColorGris,
+            detalle = motionTime?.let { "Ultima deteccion: $it" } ?: "Sin detecciones aun"
+        )
+
+        // === TARJETAS SIRENA Y LUZ ===
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            StatusCard(
+                titulo = "Sirena",
+                valor = if (siren) "ON" else "OFF",
+                colorValor = if (siren) ColorRojo else ColorGris,
+                modifier = Modifier.weight(1f)
+            )
+            StatusCard(
+                titulo = "Luz",
+                valor = if (light) "ON" else "OFF",
+                colorValor = if (light) ColorAmbar else ColorGris,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+
+    // === DIALOGO DE DISPOSITIVOS EMPAREJADOS ===
+    if (showDevices) {
+        AlertDialog(
+            onDismissRequest = { showDevices = false },
+            title = { Text("Dispositivos emparejados") },
+            text = {
+                if (pairedDevices.isEmpty()) {
+                    Text(
+                        "No hay dispositivos emparejados (o falta el permiso Bluetooth). " +
+                            "Ve a Ajustes > Bluetooth y empareja el HC-05 con PIN 1234."
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        pairedDevices.forEach { dispositivo ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        viewModel.connectTo(dispositivo.address)
+                                        showDevices = false
+                                    }
+                                    .padding(vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = dispositivo.name,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 15.sp
+                                )
+                                Text(
+                                    text = dispositivo.address,
+                                    fontSize = 12.sp,
+                                    color = ColorGris
+                                )
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDevices = false }) {
+                    Text("Cerrar")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun EstadoChip(texto: String, color: Color) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = color.copy(alpha = 0.15f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, color)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .background(color, RoundedCornerShape(50))
+            )
+            Text(
+                text = texto,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                color = color
+            )
+        }
+    }
+}
+
+@Composable
+private fun StatusCard(
+    titulo: String,
+    valor: String,
+    colorValor: Color,
+    detalle: String? = null,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = titulo,
+                fontSize = 14.sp,
+                color = ColorGris
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = valor,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = colorValor
+            )
+            if (detalle != null) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = detalle,
+                    fontSize = 12.sp,
+                    color = ColorGris
+                )
+            }
+        }
+    }
+}
+
+
+########## app/src/main/java/com/example/alarmaproyecto/ui/screens/LoginScreen.kt ##########
+package com.example.alarmaproyecto.ui.screens
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.alarmaproyecto.data.UserRepository
+import com.example.alarmaproyecto.ui.theme.IoTPrimary
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun LoginScreen(
+    onLoginSuccess: (String) -> Unit = {},
+    onNavigateToRegister: () -> Unit = {}
+) {
+    val context = LocalContext.current
+    val userRepository = remember { UserRepository(context) }
+    val scope = rememberCoroutineScope()
+
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf("") }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Alarma Proyecto") },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = IoTPrimary,
+                    titleContentColor = Color.White
+                )
+            )
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "Alarma Proyecto",
+                fontSize = 32.sp,
+                fontWeight = FontWeight.Bold,
+                color = IoTPrimary,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            Text(
+                text = "Monitoreo y Control de Dispositivos IoT",
+                fontSize = 14.sp,
+                color = Color.Gray,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(bottom = 48.dp)
+            )
+
+            OutlinedTextField(
+                value = email,
+                onValueChange = {
+                    email = it
+                    errorMessage = ""
+                },
+                label = { Text("Correo ElectrÃ³nico") },
+                leadingIcon = {
+                    Icon(Icons.Default.Email, contentDescription = "Email")
+                },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Email
+                ),
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp)
+            )
+
+            OutlinedTextField(
+                value = password,
+                onValueChange = {
+                    password = it
+                    errorMessage = ""
+                },
+                label = { Text("ContraseÃ±a") },
+                leadingIcon = {
+                    Icon(Icons.Default.Lock, contentDescription = "Password")
+                },
+                trailingIcon = {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Icon(
+                            if (passwordVisible) Icons.Default.VisibilityOff
+                            else Icons.Default.Visibility,
+                            contentDescription = "Toggle Password"
+                        )
+                    }
+                },
+                visualTransformation = if (passwordVisible) VisualTransformation.None
+                else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password
+                ),
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp)
+            )
+
+            if (errorMessage.isNotEmpty()) {
+                Text(
+                    text = errorMessage,
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 14.sp,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+            }
+
+            Button(
+                onClick = {
+                    isLoading = true
+                    scope.launch {
+                        val success = userRepository.login(email, password)
+                        isLoading = false
+                        if (success) {
+                            onLoginSuccess(email)
+                        } else {
+                            errorMessage = "Correo o contraseÃ±a incorrectos"
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp),
+                enabled = email.isNotEmpty() && password.isNotEmpty() && !isLoading
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
+                } else {
+                    Text("Iniciar SesiÃ³n", fontSize = 16.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            TextButton(
+                onClick = onNavigateToRegister
+            ) {
+                Text(
+                    "Â¿No tienes cuenta? RegÃ­strate",
+                    color = IoTPrimary
+                )
+            }
+        }
+    }
+}
+
+
+########## app/src/main/java/com/example/alarmaproyecto/ui/screens/MainScreen.kt ##########
+package com.example.alarmaproyecto.ui.screens
+
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import com.example.alarmaproyecto.notifications.NotificationHelper
+import com.example.alarmaproyecto.ui.theme.IoTPrimary
+import com.example.alarmaproyecto.ui.viewmodel.AlarmViewModel
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MainScreen(
+    userEmail: String,
+    onLogout: () -> Unit,
+    viewModel: AlarmViewModel
+) {
+    var tab by rememberSaveable { mutableStateOf(0) }
+    val context = LocalContext.current
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    val alertTick by viewModel.alertTick.collectAsState()
+    val error by viewModel.connectionError.collectAsState()
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        viewModel.connect()
+    }
+
+    LaunchedEffect(Unit) {
+        NotificationHelper.createChannel(context)
+        val permisos = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permisos.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permisos.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (permisos.isNotEmpty()) {
+            permissionLauncher.launch(permisos.toTypedArray())
+        } else {
+            viewModel.connect()
+        }
+    }
+
+    LaunchedEffect(alertTick) {
+        if (alertTick > 0L) {
+            snackbarHostState.showSnackbar("Movimiento detectado con la alarma armada")
+        }
+    }
+
+    val errorActual = error
+    if (errorActual != null) {
+        AlertDialog(
+            onDismissRequest = { viewModel.clearError() },
+            title = { Text("Bluetooth") },
+            text = { Text(errorActual) },
+            confirmButton = {
+                TextButton(onClick = { viewModel.clearError() }) {
+                    Text("Cerrar")
+                }
+            }
+        )
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Alarma IoT") },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = IoTPrimary,
+                    titleContentColor = Color.White
+                ),
+                actions = {
+                    IconButton(onClick = onLogout) {
+                        Icon(
+                            Icons.Default.Logout,
+                            contentDescription = "Cerrar sesion",
+                            tint = Color.White
+                        )
+                    }
+                }
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        bottomBar = {
+            NavigationBar(containerColor = IoTPrimary) {
+                NavigationBarItem(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
+                    label = { Text("Dashboard") },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = Color.White,
+                        selectedTextColor = Color.White,
+                        unselectedIconColor = Color.White.copy(alpha = 0.7f),
+                        unselectedTextColor = Color.White.copy(alpha = 0.7f),
+                        indicatorColor = Color.White.copy(alpha = 0.2f)
+                    )
+                )
+                NavigationBarItem(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                    label = { Text("Control") },
+                    colors = NavigationBarItemDefaults.colors(
+                        selectedIconColor = Color.White,
+                        selectedTextColor = Color.White,
+                        unselectedIconColor = Color.White.copy(alpha = 0.7f),
+                        unselectedTextColor = Color.White.copy(alpha = 0.7f),
+                        indicatorColor = Color.White.copy(alpha = 0.2f)
+                    )
+                )
+            }
+        }
+    ) { paddingValues ->
+        Box(modifier = Modifier.padding(paddingValues)) {
+            when (tab) {
+                0 -> DashboardContent(userEmail = userEmail, viewModel = viewModel)
+                1 -> ControlScreen(viewModel = viewModel)
+            }
+        }
+    }
+}
+
+
+########## app/src/main/java/com/example/alarmaproyecto/ui/screens/RegisterScreen.kt ##########
+package com.example.alarmaproyecto.ui.screens
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.alarmaproyecto.data.UserRepository
+import com.example.alarmaproyecto.ui.theme.IoTPrimary
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RegisterScreen(
+    onRegisterSuccess: () -> Unit = {},
+    onBackToLogin: () -> Unit = {}
+) {
+    val context = LocalContext.current
+    val userRepository = remember { UserRepository(context) }
+    val scope = rememberCoroutineScope()
+
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var confirmPasswordVisible by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf("") }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Crear Cuenta") },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = IoTPrimary,
+                    titleContentColor = Color.White
+                )
+            )
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "RegÃ­strate",
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Bold,
+                color = IoTPrimary,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+
+            Text(
+                text = "Crea una cuenta para acceder a la aplicaciÃ³n",
+                fontSize = 14.sp,
+                color = Color.Gray,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(bottom = 32.dp)
+            )
+
+            OutlinedTextField(
+                value = email,
+                onValueChange = {
+                    email = it
+                    errorMessage = ""
+                },
+                label = { Text("Correo ElectrÃ³nico") },
+                leadingIcon = {
+                    Icon(Icons.Default.Email, contentDescription = "Email")
+                },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Email
+                ),
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp)
+            )
+
+            OutlinedTextField(
+                value = password,
+                onValueChange = {
+                    password = it
+                    errorMessage = ""
+                },
+                label = { Text("ContraseÃ±a") },
+                leadingIcon = {
+                    Icon(Icons.Default.Lock, contentDescription = "Password")
+                },
+                trailingIcon = {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Icon(
+                            if (passwordVisible) Icons.Default.VisibilityOff
+                            else Icons.Default.Visibility,
+                            contentDescription = "Toggle Password"
+                        )
+                    }
+                },
+                visualTransformation = if (passwordVisible) VisualTransformation.None
+                else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password
+                ),
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp)
+            )
+
+            OutlinedTextField(
+                value = confirmPassword,
+                onValueChange = {
+                    confirmPassword = it
+                    errorMessage = ""
+                },
+                label = { Text("Confirmar ContraseÃ±a") },
+                leadingIcon = {
+                    Icon(Icons.Default.Lock, contentDescription = "Confirm Password")
+                },
+                trailingIcon = {
+                    IconButton(onClick = { confirmPasswordVisible = !confirmPasswordVisible }) {
+                        Icon(
+                            if (confirmPasswordVisible) Icons.Default.VisibilityOff
+                            else Icons.Default.Visibility,
+                            contentDescription = "Toggle Confirm Password"
+                        )
+                    }
+                },
+                visualTransformation = if (confirmPasswordVisible) VisualTransformation.None
+                else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password
+                ),
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 24.dp)
+            )
+
+            if (errorMessage.isNotEmpty()) {
+                Text(
+                    text = errorMessage,
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 14.sp,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+            }
+
+            Button(
+                onClick = {
+                    when {
+                        email.isBlank() || password.isBlank() || confirmPassword.isBlank() -> {
+                            errorMessage = "Todos los campos son obligatorios"
+                        }
+                        !email.contains("@") || !email.contains(".") -> {
+                            errorMessage = "Ingresa un correo electrÃ³nico vÃ¡lido"
+                        }
+                        password.length < 6 -> {
+                            errorMessage = "La contraseÃ±a debe tener al menos 6 caracteres"
+                        }
+                        password != confirmPassword -> {
+                            errorMessage = "Las contraseÃ±as no coinciden"
+                        }
+                        else -> {
+                            isLoading = true
+                            scope.launch {
+                                val success = userRepository.register(email, password)
+                                isLoading = false
+                                if (success) {
+                                    onRegisterSuccess()
+                                } else {
+                                    errorMessage = "El correo ya estÃ¡ registrado"
+                                }
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp),
+                enabled = !isLoading
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        modifier = Modifier.size(24.dp)
+                    )
+                } else {
+                    Text("Crear Cuenta", fontSize = 16.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            TextButton(
+                onClick = onBackToLogin
+            ) {
+                Text(
+                    "Ya tengo cuenta, iniciar sesiÃ³n",
+                    color = IoTPrimary
+                )
+            }
+        }
+    }
+}
+
+
+########## app/src/main/java/com/example/alarmaproyecto/ui/theme/Color.kt ##########
+package com.example.alarmaproyecto.ui.theme
+
+import androidx.compose.ui.graphics.Color
+
+// IoT Alarm Colors
+val IoTPrimary = Color(0xFF1976D2)
+val IoTPrimaryVariant = Color(0xFF0D47A1)
+val IoTSecondary = Color(0xFF26A69A)
+val IoTSecondaryVariant = Color(0xFF00897B)
+val IoTBackground = Color(0xFFF5F5F5)
+val IOTSurface = Color(0xFFFFFFFF)
+val IoTError = Color(0xFFD32F2F)
+val IOTOnPrimary = Color(0xFFFFFFFF)
+val IOTOnSecondary = Color(0xFF000000)
+val IOTOnBackground = Color(0xFF1C1B1F)
+val IOTOnSurface = Color(0xFF1C1B1F)
+
+// Sensor Colors
+val TemperatureColor = Color(0xFFE53935)
+val HumidityColor = Color(0xFF1E88E5)
+val LightColor = Color(0xFFFFB300)
+val RelayColor = Color(0xFF388E3C)
+val OfflineColor = Color(0xFF9E9E9E)
+
+// Status Colors
+val IOTSuccess = Color(0xFF388E3C)
+val IOTWarning = Color(0xFFFFA000)
+val IOTDanger = Color(0xFFD32F2F)
+
+
+########## app/src/main/java/com/example/alarmaproyecto/ui/theme/Theme.kt ##########
+package com.example.alarmaproyecto.ui.theme
+
+import android.os.Build
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.*
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalContext
+
+private val LightColorScheme = lightColorScheme(
+    primary = IoTPrimary,
+    onPrimary = IOTOnPrimary,
+    primaryContainer = IoTPrimaryVariant,
+    secondary = IoTSecondary,
+    onSecondary = IOTOnSecondary,
+    secondaryContainer = IoTSecondaryVariant,
+    background = IoTBackground,
+    onBackground = IOTOnBackground,
+    surface = IOTSurface,
+    onSurface = IOTOnSurface,
+    error = IoTError,
+)
+
+private val DarkColorScheme = darkColorScheme(
+    primary = IoTPrimary,
+    onPrimary = IOTOnPrimary,
+    primaryContainer = IoTPrimaryVariant,
+    secondary = IoTSecondary,
+    onSecondary = IOTOnSecondary,
+    secondaryContainer = IoTSecondaryVariant,
+    background = IoTBackground,
+    onBackground = IOTOnBackground,
+    surface = IOTSurface,
+    onSurface = IOTOnSurface,
+    error = IoTError,
+)
+
+@Composable
+fun AlarmaProyectoTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    dynamicColor: Boolean = false,
+    content: @Composable () -> Unit
+) {
+    val colorScheme = when {
+        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+            val context = LocalContext.current
+            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        }
+        darkTheme -> DarkColorScheme
+        else -> LightColorScheme
+    }
+
+    MaterialTheme(
+        colorScheme = colorScheme,
+        typography = Typography,
+        content = content
+    )
+}
+
+
+########## app/src/main/java/com/example/alarmaproyecto/ui/theme/Type.kt ##########
+package com.example.alarmaproyecto.ui.theme
+
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+
+// Set of Material typography styles to start with
+val Typography = Typography(
+    bodyLarge = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Normal,
+        fontSize = 16.sp,
+        lineHeight = 24.sp,
+        letterSpacing = 0.5.sp
+    )
+    /* Other default text styles to override
+    titleLarge = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Normal,
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
+        letterSpacing = 0.sp
+    ),
+    labelSmall = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Medium,
+        fontSize = 11.sp,
+        lineHeight = 16.sp,
+        letterSpacing = 0.5.sp
+    )
+    */
+)
+
+########## app/src/main/java/com/example/alarmaproyecto/ui/viewmodel/AlarmViewModel.kt ##########
+package com.example.alarmaproyecto.ui.viewmodel
+
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.alarmaproyecto.bluetooth.BluetoothConnection
+import com.example.alarmaproyecto.bluetooth.ConnectionState
+import com.example.alarmaproyecto.bluetooth.PairedDeviceInfo
+import com.example.alarmaproyecto.notifications.NotificationHelper
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+/**
+ * Estado compartido de la alarma entre las pestaÃ±as Dashboard y Control.
+ * Parsea los mensajes del Arduino y envia comandos CMD:*.
+ */
+class AlarmViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val _armed = MutableStateFlow(false)
+    val armed: StateFlow<Boolean> = _armed
+
+    private val _siren = MutableStateFlow(false)
+    val siren: StateFlow<Boolean> = _siren
+
+    private val _light = MutableStateFlow(false)
+    val light: StateFlow<Boolean> = _light
+
+    private val _motion = MutableStateFlow(false)
+    val motion: StateFlow<Boolean> = _motion
+
+    private val _motionTime = MutableStateFlow<String?>(null)
+    val motionTime: StateFlow<String?> = _motionTime
+
+    private val _alertTick = MutableStateFlow(0L)
+    val alertTick: StateFlow<Long> = _alertTick
+
+    private val _pairedDevices = MutableStateFlow<List<PairedDeviceInfo>>(emptyList())
+    val pairedDevices: StateFlow<List<PairedDeviceInfo>> = _pairedDevices
+
+    val connectionState: StateFlow<ConnectionState> = BluetoothConnection.state
+    val connectionError: StateFlow<String?> = BluetoothConnection.error
+
+    private var sincronizado = false
+
+    init {
+        viewModelScope.launch {
+            BluetoothConnection.incoming.collect { linea -> manejarLinea(linea) }
+        }
+        viewModelScope.launch {
+            BluetoothConnection.state.collect { estado ->
+                if (estado == ConnectionState.CONNECTED && !sincronizado) {
+                    sincronizado = true
+                    BluetoothConnection.send("CMD:status")
+                } else if (estado != ConnectionState.CONNECTED) {
+                    sincronizado = false
+                }
+            }
+        }
+    }
+
+    fun connect() = BluetoothConnection.connect(getApplication())
+
+    fun connectTo(address: String) = BluetoothConnection.connect(getApplication(), address)
+
+    fun refreshPairedDevices() {
+        _pairedDevices.value = BluetoothConnection.bondedDevices(getApplication())
+    }
+
+    fun disconnect() = BluetoothConnection.disconnect()
+
+    fun clearError() = BluetoothConnection.clearError()
+
+    fun setArmed(valor: Boolean) {
+        _armed.value = valor
+        BluetoothConnection.send(if (valor) "CMD:arm:1" else "CMD:arm:0")
+    }
+
+    fun setSiren(valor: Boolean) {
+        _siren.value = valor
+        BluetoothConnection.send(if (valor) "CMD:siren:1" else "CMD:siren:0")
+    }
+
+    fun setLight(valor: Boolean) {
+        _light.value = valor
+        BluetoothConnection.send(if (valor) "CMD:light:1" else "CMD:light:0")
+    }
+
+    private fun manejarLinea(linea: String) {
+        val partes = linea.split(":")
+        when {
+            linea.startsWith("STATUS:armed:") && partes.size >= 3 -> {
+                _armed.value = partes[2] == "1"
+            }
+            linea.startsWith("STATUS:siren:") && partes.size >= 3 -> {
+                _siren.value = partes[2] == "1"
+            }
+            linea.startsWith("STATUS:light:") && partes.size >= 3 -> {
+                _light.value = partes[2] == "1"
+            }
+            linea.startsWith("SENSOR:motion:") && partes.size >= 3 -> {
+                val hayMovimiento = partes[2] == "1"
+                _motion.value = hayMovimiento
+                if (hayMovimiento) {
+                    _motionTime.value = horaActual()
+                }
+            }
+            linea.startsWith("ALERT:motion:") && partes.size >= 3 -> {
+                _motion.value = true
+                _motionTime.value = horaActual()
+                _alertTick.value = System.currentTimeMillis()
+                NotificationHelper.showMotionAlert(getApplication())
+            }
+        }
+    }
+
+    private fun horaActual(): String =
+        SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+}
+
