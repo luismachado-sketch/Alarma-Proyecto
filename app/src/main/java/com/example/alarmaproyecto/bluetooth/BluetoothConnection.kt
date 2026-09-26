@@ -112,9 +112,16 @@ object BluetoothConnection {
         _error.value = null
 
         scope.launch {
+            // Un descubrimiento activo (de otra app) impide conectar
+            try {
+                btAdapter.cancelDiscovery()
+            } catch (_: Exception) {
+            }
+
             var ultimoMensaje = "error desconocido"
 
-            for (intento in 1..2) {
+            // 4 intentos: 2 con socket seguro (SPP) y 2 con socket insecure
+            for (intento in 1..4) {
                 try {
                     val device: BluetoothDevice = if (address != null) {
                         btAdapter.getRemoteDevice(address)
@@ -144,9 +151,21 @@ object BluetoothConnection {
                         hc05
                     }
 
+                    if (device.bondState != BluetoothDevice.BOND_BONDED) {
+                        _state.value = ConnectionState.DISCONNECTED
+                        _error.value = "El dispositivo ${device.name ?: device.address} no esta " +
+                            "vinculado. Emparejalo desde Ajustes > Bluetooth con PIN 1234."
+                        return@launch
+                    }
+
                     closeSocket()
 
-                    val s = device.createRfcommSocketToServiceRecord(UUID.fromString(SPP_UUID))
+                    val uuid = UUID.fromString(SPP_UUID)
+                    val s = if (intento <= 2) {
+                        device.createRfcommSocketToServiceRecord(uuid)
+                    } else {
+                        device.createInsecureRfcommSocketToServiceRecord(uuid)
+                    }
                     try {
                         s.connect()
                     } catch (e: Exception) {
@@ -165,17 +184,18 @@ object BluetoothConnection {
                 } catch (e: Exception) {
                     ultimoMensaje = e.message ?: e.javaClass.simpleName
                     closeSocket()
-                    if (intento < 2) {
-                        kotlinx.coroutines.delay(700)
+                    if (intento < 4) {
+                        kotlinx.coroutines.delay(if (intento == 1) 1000L else 2000L)
                     }
                 }
             }
 
             _state.value = ConnectionState.DISCONNECTED
-            _error.value = "No se pudo conectar tras 2 intentos ($ultimoMensaje). " +
-                "Verifica: 1) HC-05 encendido (LED parpadeando), " +
-                "2) no este conectado a otro equipo, " +
-                "3) si persiste, borra el emparejado y vuelve a emparejar con PIN 1234."
+            _error.value = "No se pudo conectar tras 4 intentos ($ultimoMensaje). " +
+                "Causa habitual: otra app (ej. Serial Bluetooth) ya tiene el HC-05 conectado - " +
+                "solo admite UNA conexion: cierra las demas apps Bluetooth y reintenta. " +
+                "Si persiste: borra el emparejado del telefono, reinicia el HC-05 " +
+                "y vuelve a emparejar con PIN 1234."
         }
     }
 
