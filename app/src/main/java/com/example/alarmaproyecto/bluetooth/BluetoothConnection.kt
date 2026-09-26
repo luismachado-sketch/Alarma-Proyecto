@@ -118,54 +118,57 @@ object BluetoothConnection {
             } catch (_: Exception) {
             }
 
-            var ultimoMensaje = "error desconocido"
+            // Resolver el dispositivo (una sola vez)
+            val device: BluetoothDevice = if (address != null) {
+                btAdapter.getRemoteDevice(address)
+            } else {
+                val bonded: Set<BluetoothDevice> = try {
+                    btAdapter.bondedDevices ?: emptySet()
+                } catch (e: SecurityException) {
+                    emptySet()
+                }
 
-            // 4 intentos: 2 con socket seguro (SPP) y 2 con socket insecure
-            for (intento in 1..4) {
-                try {
-                    val device: BluetoothDevice = if (address != null) {
-                        btAdapter.getRemoteDevice(address)
+                val hc05 = bonded.firstOrNull { d ->
+                    val name = d.name ?: ""
+                    name.startsWith("HC-05", ignoreCase = true) ||
+                        name.startsWith("HC05", ignoreCase = true)
+                }
+
+                if (hc05 == null) {
+                    val nombres = bonded.joinToString { it.name ?: "sin nombre" }
+                    _state.value = ConnectionState.DISCONNECTED
+                    _error.value = if (bonded.isEmpty()) {
+                        "HC-05 no emparejado. Ve a Ajustes > Bluetooth y emparejalo con PIN 1234."
                     } else {
-                        val bonded: Set<BluetoothDevice> = try {
-                            btAdapter.bondedDevices ?: emptySet()
-                        } catch (e: SecurityException) {
-                            emptySet()
-                        }
-
-                        val hc05 = bonded.firstOrNull { d ->
-                            val name = d.name ?: ""
-                            name.startsWith("HC-05", ignoreCase = true) ||
-                                name.startsWith("HC05", ignoreCase = true)
-                        }
-
-                        if (hc05 == null) {
-                            val nombres = bonded.joinToString { it.name ?: "sin nombre" }
-                            _state.value = ConnectionState.DISCONNECTED
-                            _error.value = if (bonded.isEmpty()) {
-                                "HC-05 no emparejado. Ve a Ajustes > Bluetooth y emparejalo con PIN 1234."
-                            } else {
-                                "HC-05 no encontrado. Dispositivos emparejados: $nombres"
-                            }
-                            return@launch
-                        }
-                        hc05
+                        "HC-05 no encontrado. Dispositivos emparejados: $nombres"
                     }
+                    return@launch
+                }
+                hc05
+            }
 
-                    if (device.bondState != BluetoothDevice.BOND_BONDED) {
-                        _state.value = ConnectionState.DISCONNECTED
-                        _error.value = "El dispositivo ${device.name ?: device.address} no esta " +
-                            "vinculado. Emparejalo desde Ajustes > Bluetooth con PIN 1234."
-                        return@launch
-                    }
+            if (device.bondState != BluetoothDevice.BOND_BONDED) {
+                _state.value = ConnectionState.DISCONNECTED
+                _error.value = "El dispositivo ${device.name ?: device.address} no esta " +
+                    "vinculado. Emparejalo desde Ajustes > Bluetooth con PIN 1234."
+                return@launch
+            }
 
+            val fallos = mutableListOf<String>()
+
+            // 6 intentos: seguro, insecure, y por ultimo canal fijo via reflexion
+            // (el tip clasico para HC-05: createRfcommSocket(1) evita el SDP con puerto -1)
+            for (intento in 1..6) {
+                val metodo = when (intento) {
+                    1, 2 -> "seguro"
+                    3, 4 -> "insecure"
+                    5 -> "canal1"
+                    else -> "canal1-insecure"
+                }
+                try {
                     closeSocket()
 
-                    val uuid = UUID.fromString(SPP_UUID)
-                    val s = if (intento <= 2) {
-                        device.createRfcommSocketToServiceRecord(uuid)
-                    } else {
-                        device.createInsecureRfcommSocketToServiceRecord(uuid)
-                    }
+                    val s = crearSocket(device, intento)
                     try {
                         s.connect()
                     } catch (e: Exception) {
@@ -182,21 +185,56 @@ object BluetoothConnection {
                     // readLoop retorno: la conexion se cerro desde el otro lado
                     return@launch
                 } catch (e: Exception) {
-                    ultimoMensaje = e.message ?: e.javaClass.simpleName
+                    fallos.add("$metodo: ${e.message ?: e.javaClass.simpleName}")
                     closeSocket()
-                    if (intento < 4) {
-                        kotlinx.coroutines.delay(if (intento == 1) 1000L else 2000L)
+                    if (intento < 6) {
+                        kotlinx.coroutines.delay(
+                            when (intento) {
+                                1 -> 1000L
+                                2 -> 2000L
+                                3 -> 3000L
+                                else -> 4000L
+                            }
+                        )
                     }
                 }
             }
 
             _state.value = ConnectionState.DISCONNECTED
-            _error.value = "No se pudo conectar tras 4 intentos ($ultimoMensaje). " +
-                "Causa habitual: otra app (ej. Serial Bluetooth) ya tiene el HC-05 conectado - " +
-                "solo admite UNA conexion: cierra las demas apps Bluetooth y reintenta. " +
-                "Si persiste: borra el emparejado del telefono, reinicia el HC-05 " +
-                "y vuelve a emparejar con PIN 1234."
+            _error.value = "No se pudo conectar tras 6 intentos. " +
+                "Detalle: ${fallos.joinToString(" | ")}. " +
+                "Prueba: apaga y enciende el Bluetooth del telefono (limpia el stack), " +
+                "cierra las demas apps Bluetooth y reintenta. " +
+                "Si persiste: borra el emparejado, reinicia el HC-05 y vuelve a emparejar con PIN 1234."
         }
+    }
+
+    /**
+     * Crea el socket segun el intento:
+     * 1-2 seguro (SPP), 3-4 insecure, 5-6 canal fijo 1 por reflexion (sin SDP).
+     */
+    @SuppressLint("MissingPermission")
+    private fun crearSocket(device: BluetoothDevice, intento: Int): BluetoothSocket {
+        val uuid = UUID.fromString(SPP_UUID)
+        return when (intento) {
+            1, 2 -> device.createRfcommSocketToServiceRecord(uuid)
+            3, 4 -> device.createInsecureRfcommSocketToServiceRecord(uuid)
+            5 -> socketPorReflexion(device, "createRfcommSocket", 1)
+            else -> socketPorReflexion(device, "createInsecureRfcommSocket", 1)
+        }
+    }
+
+    /** Accede al metodo oculto createRfcommSocket(canal) - evita la busqueda SDP. */
+    private fun socketPorReflexion(
+        device: BluetoothDevice,
+        nombreMetodo: String,
+        canal: Int
+    ): BluetoothSocket {
+        val metodo = device.javaClass.getMethod(
+            nombreMetodo,
+            Int::class.javaPrimitiveType
+        )
+        return metodo.invoke(device, canal) as BluetoothSocket
     }
 
     @SuppressLint("MissingPermission")
@@ -213,7 +251,7 @@ object BluetoothConnection {
         } catch (_: Exception) {
             // Conexion cerrada o perdida
         }
-        socket = null
+        closeSocket()
         _state.value = ConnectionState.DISCONNECTED
     }
 
@@ -240,6 +278,15 @@ object BluetoothConnection {
     }
 
     private fun closeSocket() {
+        // Cerrar streams primero evita que el stack quede "sucio" y falle la reconexion
+        try {
+            socket?.inputStream?.close()
+        } catch (_: Exception) {
+        }
+        try {
+            socket?.outputStream?.close()
+        } catch (_: Exception) {
+        }
         try {
             socket?.close()
         } catch (_: Exception) {
