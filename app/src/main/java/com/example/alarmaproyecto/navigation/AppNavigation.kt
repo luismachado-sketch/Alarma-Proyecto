@@ -4,9 +4,10 @@ import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import com.example.alarmaproyecto.ui.screens.DashboardScreen
 import com.example.alarmaproyecto.ui.screens.LoginScreen
+import com.example.alarmaproyecto.ui.screens.MainScreen
 import com.example.alarmaproyecto.ui.screens.RegisterScreen
+import com.example.alarmaproyecto.ui.viewmodel.AlarmViewModel
 
 object Routes {
     const val LOGIN = "login"
@@ -15,7 +16,10 @@ object Routes {
 }
 
 @Composable
-fun AppNavigation(navController: NavHostController) {
+fun AppNavigation(
+    navController: NavHostController,
+    alarmViewModel: AlarmViewModel
+) {
     NavHost(
         navController = navController,
         startDestination = Routes.LOGIN
@@ -48,13 +52,15 @@ fun AppNavigation(navController: NavHostController) {
 
         composable("${Routes.DASHBOARD}/{email}") { backStackEntry ->
             val email = backStackEntry.arguments?.getString("email") ?: ""
-            DashboardScreen(
+            MainScreen(
                 userEmail = email,
                 onLogout = {
+                    alarmViewModel.disconnect()
                     navController.navigate(Routes.LOGIN) {
                         popUpTo(Routes.LOGIN) { inclusive = true }
                     }
-                }
+                },
+                viewModel = alarmViewModel
             )
         }
     }
