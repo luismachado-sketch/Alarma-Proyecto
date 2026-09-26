@@ -29,6 +29,11 @@ bool luzEncendida = false;
 bool movimientoDetectado = false;
 bool estadoMovimientoAnterior = false;
 
+// === NIVEL DE ACTIVACIÓN DE RELÉS ===
+// Módulo de BAJO nivel: LOW = bobina energizada (verde), HIGH = apagada (rojo)
+const int RELAY_ON = LOW;
+const int RELAY_OFF = HIGH;
+
 // === BLUETOOTH ===
 SoftwareSerial bluetooth(BT_RX, BT_TX);
 
@@ -38,12 +43,19 @@ const unsigned long INTERVALO_ENVIO = 500; // Enviar estado cada 500ms max
 unsigned long ultimoParpadeo = 0;
 bool estadoLed = false;
 
+// === RETARDO DE APAGADO ===
+const unsigned long RETARDO_APAGADO = 10000; // 10 segundos antes de apagar relés
+unsigned long inicioSinMovimiento = 0;
+bool esperandoApagado = false;
+
 void setup() {
   // Serial para debug (monitor serial)
   Serial.begin(9600);
+  Serial.setTimeout(50); // No bloquear si llega datos sin salto de línea
   
   // Bluetooth
   bluetooth.begin(9600);
+  bluetooth.setTimeout(50); // Evita bloqueos de 1s con basura del HC-05
   
   // Pines de salida
   pinMode(RELAY_1, OUTPUT);
@@ -53,12 +65,12 @@ void setup() {
   pinMode(PIR_PIN, INPUT);
   
   // Estado inicial: todo apagado
-  digitalWrite(RELAY_1, LOW);
-  digitalWrite(RELAY_2, LOW);
+  digitalWrite(RELAY_1, RELAY_OFF);
+  digitalWrite(RELAY_2, RELAY_OFF);
   
   // Mensaje de inicio
   Serial.println(F("=== Alarma IoT Iniciada ==="));
-  Serial.println(F("Sistema desarmado. Esperando comandos BT..."));
+  Serial.println(F("Sistema desarmado. Escriba arm/disarm/status/relayon/relayoff"));
   
   // Enviar estado inicial al conectarse
   delay(1000);
@@ -72,6 +84,29 @@ void loop() {
     comando.trim();
     if (comando.length() > 0) {
       procesarComando(comando);
+    }
+  }
+  
+  // === LEER COMANDOS SERIALES (prueba sin Bluetooth) ===
+  if (Serial.available()) {
+    String cmdSerial = Serial.readStringUntil('\n');
+    cmdSerial.trim();
+    if (cmdSerial == "arm") {
+      procesarComando("CMD:arm:1");
+    } else if (cmdSerial == "disarm") {
+      procesarComando("CMD:arm:0");
+    } else if (cmdSerial == "status") {
+      procesarComando("CMD:status");
+    } else if (cmdSerial == "relayon") {
+      digitalWrite(RELAY_1, RELAY_ON);
+      digitalWrite(RELAY_2, RELAY_ON);
+      Serial.println(F("[SERIAL] Relés forzados ON (debe encender VERDE)"));
+    } else if (cmdSerial == "relayoff") {
+      digitalWrite(RELAY_1, RELAY_OFF);
+      digitalWrite(RELAY_2, RELAY_OFF);
+      Serial.println(F("[SERIAL] Relés forzados OFF (rojo = alimentación)"));
+    } else if (cmdSerial.length() > 0) {
+      Serial.println(F("[SERIAL] Comando no reconocido (arm/disarm/status/relayon/relayoff)"));
     }
   }
   
@@ -94,12 +129,35 @@ void loop() {
         activarLuz();
         bluetooth.println(F("ALERT:motion:1"));
         Serial.println(F("[ALERTA] Sistema armado - Alarmas activadas"));
+        esperandoApagado = false; // Cancelar apagado pendiente si vuelve el movimiento
       }
     } else {
       // Sin movimiento
       Serial.println(F("[PIR] Sin movimiento"));
       bluetooth.println(F("SENSOR:motion:0"));
       movimientoDetectado = false;
+      
+      // Si estaba armado, programar apagado de relés tras el retardo
+      if (sistemaArmado && (sirenaEncendida || luzEncendida)) {
+        esperandoApagado = true;
+        inicioSinMovimiento = millis();
+        Serial.println(F("[ALERTA] Sin movimiento - apagando relés en 10 s..."));
+      }
+    }
+  }
+  
+  // === APAGADO PROGRAMADO DE RELÉS ===
+  if (esperandoApagado) {
+    if (!sistemaArmado || (!sirenaEncendida && !luzEncendida)) {
+      esperandoApagado = false; // Se desarmó o ya se apagaron
+    } else if (millis() - inicioSinMovimiento >= RETARDO_APAGADO) {
+      esperandoApagado = false;
+      unsigned long transcurrido = (millis() - inicioSinMovimiento) / 1000;
+      apagarSirena();
+      apagarLuz();
+      Serial.print(F("[ALERTA] Movimiento terminó - relés apagados (transcurrido: "));
+      Serial.print(transcurrido);
+      Serial.println(F(" s)"));
     }
   }
   
@@ -162,28 +220,28 @@ void procesarComando(String cmd) {
 
 // === CONTROL DE ALARMAS ===
 void activarSirena() {
-  digitalWrite(RELAY_1, HIGH);
+  digitalWrite(RELAY_1, RELAY_ON);
   sirenaEncendida = true;
   Serial.println(F("[RELÉ 1] Sirena ON"));
   bluetooth.println(F("STATUS:siren:1"));
 }
 
 void apagarSirena() {
-  digitalWrite(RELAY_1, LOW);
+  digitalWrite(RELAY_1, RELAY_OFF);
   sirenaEncendida = false;
   Serial.println(F("[RELÉ 1] Sirena OFF"));
   bluetooth.println(F("STATUS:siren:0"));
 }
 
 void activarLuz() {
-  digitalWrite(RELAY_2, HIGH);
+  digitalWrite(RELAY_2, RELAY_ON);
   luzEncendida = true;
   Serial.println(F("[RELÉ 2] Luz ON"));
   bluetooth.println(F("STATUS:light:1"));
 }
 
 void apagarLuz() {
-  digitalWrite(RELAY_2, LOW);
+  digitalWrite(RELAY_2, RELAY_OFF);
   luzEncendida = false;
   Serial.println(F("[RELÉ 2] Luz OFF"));
   bluetooth.println(F("STATUS:light:0"));
