@@ -46,6 +46,8 @@ RX           →  columna g, fila 1 →  Pin 11 (Arduino)
 
 **Nota importante**: El HC-05 TX va a Arduino pin 10 (RX software), y el HC-05 RX va a Arduino pin 11 (TX software). NO conectar RX del HC-05 directamente al pin 11 sin un divisor de voltaje si hay problemas, pero en la mayoría de casos funciona directo.
 
+**Alternativa HC-06**: el modulo de reemplazo HC-06 usa el mismo cableado (TX->D10, RX->D11). Su pin RX es de **3.3V**, por lo que se recomienda un divisor de voltaje en la linea que va al pin 11. El sketch es identico (`SoftwareSerial bluetooth(10, 11)`).
+
 ### 3. Sensor PIR
 
 ```

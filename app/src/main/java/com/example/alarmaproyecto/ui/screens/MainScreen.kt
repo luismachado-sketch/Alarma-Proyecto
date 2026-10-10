@@ -64,6 +64,9 @@ fun MainScreen(
         val permisos = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permisos.add(Manifest.permission.BLUETOOTH_CONNECT)
+            permisos.add(Manifest.permission.BLUETOOTH_SCAN)
+        } else {
+            permisos.add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permisos.add(Manifest.permission.POST_NOTIFICATIONS)

@@ -40,9 +40,15 @@ fun DashboardContent(
     val light by viewModel.light.collectAsState()
     val motion by viewModel.motion.collectAsState()
     val motionTime by viewModel.motionTime.collectAsState()
+    val alarmElapsed by viewModel.alarmElapsed.collectAsState()
+    val lastAutoOff by viewModel.lastAutoOff.collectAsState()
     val pairedDevices by viewModel.pairedDevices.collectAsState()
+    val discoveredDevices by viewModel.discoveredDevices.collectAsState()
+    val discovering by viewModel.discovering.collectAsState()
 
     var showDevices by remember { mutableStateOf(false) }
+    var showScan by remember { mutableStateOf(false) }
+    var manualMac by remember { mutableStateOf("") }
 
     Column(
         modifier = modifier
@@ -84,6 +90,19 @@ fun DashboardContent(
             }
         }
 
+        // === BOTON BUSCAR/EMPAREJAR (necesario en Samsung con HC-05/HC-06) ===
+        Button(
+            onClick = {
+                viewModel.startDiscovery()
+                showScan = true
+            },
+            enabled = connection != ConnectionState.CONNECTING,
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = IoTPrimary)
+        ) {
+            Text("Buscar modulo Bluetooth (HC-05 / HC-06)")
+        }
+
         // === BOTON VER DISPOSITIVOS ===
         OutlinedButton(
             onClick = {
@@ -112,7 +131,7 @@ fun DashboardContent(
         // === TARJETA MOVIMIENTO ===
         StatusCard(
             titulo = "Movimiento",
-            valor = if (motion) "SI DETECTADO" else "NO",
+            valor = if (motion) "DETECTADO" else "NO",
             colorValor = if (motion) ColorRojo else ColorGris,
             detalle = motionTime?.let { "Ultima deteccion: $it" } ?: "Sin detecciones aun"
         )
@@ -135,6 +154,20 @@ fun DashboardContent(
                 modifier = Modifier.weight(1f)
             )
         }
+
+        // === TARJETA TEMPORIZADOR SIRENA (mide el tiempo de auto-apagado) ===
+        val sirenaActiva = siren || light
+        StatusCard(
+            titulo = "Temporizador sirena",
+            valor = "$alarmElapsed s",
+            colorValor = if (sirenaActiva) ColorAmbar else ColorGris,
+            detalle = if (sirenaActiva && !motion && alarmElapsed > 0) {
+                "Midiendo auto-apagado..."
+            } else {
+                lastAutoOff?.let { "Último auto-apagado medido: $it s" }
+                    ?: "Sin mediciones aún"
+            }
+        )
     }
 
     // === DIALOGO DE DISPOSITIVOS EMPAREJADOS ===
@@ -183,6 +216,116 @@ fun DashboardContent(
             confirmButton = {
                 TextButton(onClick = { showDevices = false }) {
                     Text("Cerrar")
+                }
+            }
+        )
+    }
+
+    // === DIALOGO DE ESCANEO Y EMPAREJAMIENTO ===
+    if (showScan) {
+        AlertDialog(
+            onDismissRequest = {
+                viewModel.stopDiscovery()
+                showScan = false
+            },
+            title = { Text("Buscar modulo Bluetooth") },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    if (discovering) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                            Text("Buscando dispositivos...", fontSize = 13.sp)
+                        }
+                    }
+                    Text(
+                        text = "Toca el modulo para conectarte. El HC-05 (clasico) pide PIN " +
+                            "(prueba 1234). Los modulos BLE tipo HM-10 conectan sin PIN.",
+                        fontSize = 12.sp,
+                        color = ColorGris,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    if (discoveredDevices.isEmpty() && !discovering) {
+                        Text(
+                            "No se encontraron dispositivos. Verifica que el modulo este " +
+                                "encendido (LED parpadeando) y vuelve a escanear."
+                        )
+                    } else {
+                        discoveredDevices.forEach { dispositivo ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        viewModel.pairDevice(dispositivo.address)
+                                        viewModel.stopDiscovery()
+                                    }
+                                    .padding(vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = dispositivo.name,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 15.sp
+                                )
+                                Text(
+                                    text = dispositivo.address,
+                                    fontSize = 12.sp,
+                                    color = ColorGris
+                                )
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+
+                    // Conexion manual por direccion MAC (si el escaneo no lo lista)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Conectar por direccion MAC (BLE):",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    OutlinedTextField(
+                        value = manualMac,
+                        onValueChange = { manualMac = it },
+                        label = { Text("Ej: 25:FB:A3:A6:E9:D2") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Button(
+                        onClick = {
+                            val mac = manualMac.trim()
+                            if (mac.matches(Regex("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"))) {
+                                viewModel.connectTo(mac)
+                                viewModel.stopDiscovery()
+                            } else {
+                                manualMac = ""
+                            }
+                        },
+                        enabled = manualMac.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Conectar por MAC (BLE)")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.stopDiscovery()
+                    showScan = false
+                }) {
+                    Text("Cerrar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.startDiscovery() }) {
+                    Text("Escanear de nuevo")
                 }
             }
         )
