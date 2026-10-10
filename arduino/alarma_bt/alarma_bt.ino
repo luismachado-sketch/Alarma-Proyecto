@@ -44,7 +44,7 @@ unsigned long ultimoParpadeo = 0;
 bool estadoLed = false;
 
 // === RETARDO DE APAGADO ===
-const unsigned long RETARDO_APAGADO = 10000; // 10 segundos antes de apagar relés
+const unsigned long RETARDO_APAGADO = 5000; // 5 segundos antes de apagar relés
 unsigned long inicioSinMovimiento = 0;
 bool esperandoApagado = false;
 
@@ -141,7 +141,9 @@ void loop() {
       if (sistemaArmado && (sirenaEncendida || luzEncendida)) {
         esperandoApagado = true;
         inicioSinMovimiento = millis();
-        Serial.println(F("[ALERTA] Sin movimiento - apagando relés en 10 s..."));
+        Serial.print(F("[ALERTA] Sin movimiento - apagando relés en "));
+        Serial.print(RETARDO_APAGADO / 1000);
+        Serial.println(F(" s..."));
       }
     }
   }

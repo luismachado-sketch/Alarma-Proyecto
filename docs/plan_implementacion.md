@@ -124,7 +124,7 @@ CMD:status             (solicitar estado)
 |------|--------|-------|
 | Fase 1 - Hardware | Completado | Firmware en `arduino/alarma_bt/alarma_bt.ino` |
 | Fase 2 - App Android | Completado | `BluetoothConnection` (SPP + BLE), `AlarmViewModel`, notificaciones |
-| Fase 3 - Integracion | **Validado en hardware** | Flujo completo: armar -> PIR -> sirena+luz ON -> auto-off 10 s -> notificacion al telefono |
+| Fase 3 - Integracion | **Validado en hardware** | Flujo completo: armar -> PIR -> sirena+luz ON -> auto-off 5 s -> notificacion al telefono |
 
 ### Transporte (v1.3)
 
