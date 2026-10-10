@@ -120,17 +120,24 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
             }
             linea.startsWith("STATUS:siren:") && partes.size >= 3 -> {
                 _siren.value = partes[2] == "1"
-                actualizarTemporizador()
+                if (!_siren.value && !_light.value) detenerTemporizador(registrarMedicion = true)
             }
             linea.startsWith("STATUS:light:") && partes.size >= 3 -> {
                 _light.value = partes[2] == "1"
-                actualizarTemporizador()
+                if (!_siren.value && !_light.value) detenerTemporizador(registrarMedicion = true)
             }
             linea.startsWith("SENSOR:motion:") && partes.size >= 3 -> {
                 val hayMovimiento = partes[2] == "1"
                 _motion.value = hayMovimiento
                 if (hayMovimiento) {
                     _motionTime.value = horaActual()
+                    // Movimiento nuevo: el Arduino cancela su cuenta de
+                    // apagado -> reiniciar el contador
+                    detenerTemporizador(registrarMedicion = false)
+                } else if (_armed.value && (_siren.value || _light.value)) {
+                    // Fin del movimiento con alarmas ON: empieza la cuenta
+                    // de auto-apagado (debe medir ~RETARDO_APAGADO)
+                    iniciarTemporizador()
                 }
             }
             linea.startsWith("ALERT:motion:") && partes.size >= 3 -> {
@@ -146,25 +153,22 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
         SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
 
     /**
-     * Temporizador del tiempo que sirena/luz permanecen encendidos.
-     * Arranca al primer STATUS:siren:1 o STATUS:light:1 y se detiene
-     * cuando ambos vuelven a OFF, registrando la medicion en [lastAutoOff].
+     * Temporizador del auto-apagado: mide desde que termina el movimiento
+     * (SENSOR:motion:0) hasta que los reles se apagan, igual que la cuenta
+     * RETARDO_APAGADO del Arduino. Si vuelve el movimiento, la cuenta se
+     * cancela y reinicia (igual que el firmware).
      */
-    private fun actualizarTemporizador() {
-        if (_siren.value || _light.value) {
-            if (tickerJob == null) {
-                alarmStartMs = System.currentTimeMillis()
-                _alarmElapsed.value = 0
-                tickerJob = viewModelScope.launch {
-                    while (isActive) {
-                        delay(1000)
-                        _alarmElapsed.value =
-                            ((System.currentTimeMillis() - alarmStartMs) / 1000).toInt()
-                    }
-                }
+    private fun iniciarTemporizador() {
+        // Reiniciar si ya habia una cuenta en curso
+        detenerTemporizador(registrarMedicion = false)
+        alarmStartMs = System.currentTimeMillis()
+        _alarmElapsed.value = 0
+        tickerJob = viewModelScope.launch {
+            while (isActive) {
+                delay(1000)
+                _alarmElapsed.value =
+                    ((System.currentTimeMillis() - alarmStartMs) / 1000).toInt()
             }
-        } else {
-            detenerTemporizador(registrarMedicion = true)
         }
     }
 

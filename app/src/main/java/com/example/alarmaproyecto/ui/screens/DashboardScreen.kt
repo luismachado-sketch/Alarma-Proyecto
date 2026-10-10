@@ -131,7 +131,7 @@ fun DashboardContent(
         // === TARJETA MOVIMIENTO ===
         StatusCard(
             titulo = "Movimiento",
-            valor = if (motion) "SI DETECTADO" else "NO",
+            valor = if (motion) "DETECTADO" else "NO",
             colorValor = if (motion) ColorRojo else ColorGris,
             detalle = motionTime?.let { "Ultima deteccion: $it" } ?: "Sin detecciones aun"
         )
@@ -161,8 +161,12 @@ fun DashboardContent(
             titulo = "Temporizador sirena",
             valor = "$alarmElapsed s",
             colorValor = if (sirenaActiva) ColorAmbar else ColorGris,
-            detalle = lastAutoOff?.let { "Último auto-apagado medido: $it s" }
-                ?: "Sin mediciones aún"
+            detalle = if (sirenaActiva && !motion && alarmElapsed > 0) {
+                "Midiendo auto-apagado..."
+            } else {
+                lastAutoOff?.let { "Último auto-apagado medido: $it s" }
+                    ?: "Sin mediciones aún"
+            }
         )
     }
 
