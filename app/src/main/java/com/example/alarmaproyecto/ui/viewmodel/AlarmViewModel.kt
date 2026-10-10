@@ -9,6 +9,9 @@ import com.example.alarmaproyecto.bluetooth.PairedDeviceInfo
 import com.example.alarmaproyecto.notifications.NotificationHelper
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -38,6 +41,16 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
     private val _alertTick = MutableStateFlow(0L)
     val alertTick: StateFlow<Long> = _alertTick
 
+    // === TEMPORIZADOR SIRENA/LUZ (mide el tiempo de auto-apagado) ===
+    private val _alarmElapsed = MutableStateFlow(0)
+    val alarmElapsed: StateFlow<Int> = _alarmElapsed
+
+    private val _lastAutoOff = MutableStateFlow<Int?>(null)
+    val lastAutoOff: StateFlow<Int?> = _lastAutoOff
+
+    private var alarmStartMs = 0L
+    private var tickerJob: Job? = null
+
     private val _pairedDevices = MutableStateFlow<List<PairedDeviceInfo>>(emptyList())
     val pairedDevices: StateFlow<List<PairedDeviceInfo>> = _pairedDevices
 
@@ -60,6 +73,7 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
                     BluetoothConnection.send("CMD:status")
                 } else if (estado != ConnectionState.CONNECTED) {
                     sincronizado = false
+                    detenerTemporizador(registrarMedicion = false)
                 }
             }
         }
@@ -106,9 +120,11 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
             }
             linea.startsWith("STATUS:siren:") && partes.size >= 3 -> {
                 _siren.value = partes[2] == "1"
+                actualizarTemporizador()
             }
             linea.startsWith("STATUS:light:") && partes.size >= 3 -> {
                 _light.value = partes[2] == "1"
+                actualizarTemporizador()
             }
             linea.startsWith("SENSOR:motion:") && partes.size >= 3 -> {
                 val hayMovimiento = partes[2] == "1"
@@ -128,4 +144,38 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun horaActual(): String =
         SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+
+    /**
+     * Temporizador del tiempo que sirena/luz permanecen encendidos.
+     * Arranca al primer STATUS:siren:1 o STATUS:light:1 y se detiene
+     * cuando ambos vuelven a OFF, registrando la medicion en [lastAutoOff].
+     */
+    private fun actualizarTemporizador() {
+        if (_siren.value || _light.value) {
+            if (tickerJob == null) {
+                alarmStartMs = System.currentTimeMillis()
+                _alarmElapsed.value = 0
+                tickerJob = viewModelScope.launch {
+                    while (isActive) {
+                        delay(1000)
+                        _alarmElapsed.value =
+                            ((System.currentTimeMillis() - alarmStartMs) / 1000).toInt()
+                    }
+                }
+            }
+        } else {
+            detenerTemporizador(registrarMedicion = true)
+        }
+    }
+
+    private fun detenerTemporizador(registrarMedicion: Boolean) {
+        tickerJob?.cancel()
+        tickerJob = null
+        if (registrarMedicion && alarmStartMs != 0L) {
+            _lastAutoOff.value =
+                ((System.currentTimeMillis() - alarmStartMs) / 1000).toInt()
+        }
+        alarmStartMs = 0L
+        _alarmElapsed.value = 0
+    }
 }

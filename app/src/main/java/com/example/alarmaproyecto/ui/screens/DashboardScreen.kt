@@ -40,6 +40,8 @@ fun DashboardContent(
     val light by viewModel.light.collectAsState()
     val motion by viewModel.motion.collectAsState()
     val motionTime by viewModel.motionTime.collectAsState()
+    val alarmElapsed by viewModel.alarmElapsed.collectAsState()
+    val lastAutoOff by viewModel.lastAutoOff.collectAsState()
     val pairedDevices by viewModel.pairedDevices.collectAsState()
     val discoveredDevices by viewModel.discoveredDevices.collectAsState()
     val discovering by viewModel.discovering.collectAsState()
@@ -152,6 +154,16 @@ fun DashboardContent(
                 modifier = Modifier.weight(1f)
             )
         }
+
+        // === TARJETA TEMPORIZADOR SIRENA (mide el tiempo de auto-apagado) ===
+        val sirenaActiva = siren || light
+        StatusCard(
+            titulo = "Temporizador sirena",
+            valor = "$alarmElapsed s",
+            colorValor = if (sirenaActiva) ColorAmbar else ColorGris,
+            detalle = lastAutoOff?.let { "Último auto-apagado medido: $it s" }
+                ?: "Sin mediciones aún"
+        )
     }
 
     // === DIALOGO DE DISPOSITIVOS EMPAREJADOS ===
