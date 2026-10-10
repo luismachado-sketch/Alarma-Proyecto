@@ -41,6 +41,9 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
     private val _pairedDevices = MutableStateFlow<List<PairedDeviceInfo>>(emptyList())
     val pairedDevices: StateFlow<List<PairedDeviceInfo>> = _pairedDevices
 
+    val discoveredDevices: StateFlow<List<PairedDeviceInfo>> = BluetoothConnection.discovered
+    val discovering: StateFlow<Boolean> = BluetoothConnection.discovering
+
     val connectionState: StateFlow<ConnectionState> = BluetoothConnection.state
     val connectionError: StateFlow<String?> = BluetoothConnection.error
 
@@ -69,6 +72,12 @@ class AlarmViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshPairedDevices() {
         _pairedDevices.value = BluetoothConnection.bondedDevices(getApplication())
     }
+
+    fun startDiscovery() = BluetoothConnection.startDiscovery(getApplication())
+
+    fun stopDiscovery() = BluetoothConnection.stopDiscovery(getApplication())
+
+    fun pairDevice(address: String) = BluetoothConnection.pair(getApplication(), address)
 
     fun disconnect() = BluetoothConnection.disconnect()
 
