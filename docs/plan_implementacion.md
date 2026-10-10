@@ -65,6 +65,7 @@ STATUS:light:1         (luz encendida)
 STATUS:light:0         (luz apagada)
 STATUS:armed:1         (sistema armado)
 STATUS:armed:0         (sistema desarmado)
+ALERT:motion:1         (alerta: sistema armado + movimiento -> notificacion en la app)
 ```
 
 ### Mensajes App -> Arduino
@@ -108,7 +109,7 @@ CMD:status             (solicitar estado)
 
 ### Fase 2: App Android
 1. Agregar permisos Bluetooth al manifest
-2. Crear bluetooth/BluetoothManager.kt - conexion y comunicacion
+2. Crear `bluetooth/BluetoothConnection.kt` - conexion y comunicacion
 3. Modificar DashboardScreen - mostrar datos del sensor en tiempo real
 4. Modificar ControlScreen - switches que envian comandos BT
 5. Agregar notificaciones push cuando se detecte movimiento
@@ -116,3 +117,23 @@ CMD:status             (solicitar estado)
 ### Fase 3: Integracion
 1. Emparejar HC-05 con el celular
 2. Probar flujo completo: movimiento -> Arduino -> BT -> App -> notificacion
+
+## Estado de Avance
+
+| Fase | Estado | Notas |
+|------|--------|-------|
+| Fase 1 - Hardware | Completado | Firmware en `arduino/alarma_bt/alarma_bt.ino` |
+| Fase 2 - App Android | Completado | `BluetoothConnection` (SPP + BLE), `AlarmViewModel`, notificaciones |
+| Fase 3 - Integracion | **Validado en hardware** | Flujo completo: armar -> PIR -> sirena+luz ON -> auto-off 5 s -> notificacion al telefono |
+
+### Transporte (v1.3)
+
+La app soporta dos transportes y decide segun el tipo de dispositivo encontrado:
+
+- **Clasico SPP (RFCOMM)**: HC-05. Si no esta vinculado, `createBond()` dispara el PIN (1234/0000).
+- **BLE GATT (FFE0/FFE1)**: modulos seriales tipo HM-10 (no requiere PIN).
+
+### Pendiente
+
+- Modulo rotulado "HC-06 ALARMA": resulto ser **BLE tipo HM-10** con UART defectuoso. Ver `docs/pendientes.md`.
+
